@@ -1,0 +1,110 @@
+# Datadog Monitor Definitions for TalentMatch AI
+# Import via: datadog-ci monitors sync --config monitors.yaml
+
+# ── API Performance ──────────────────────────────────────
+
+- name: "TalentMatch AI — High Latency (P95 > 2s)"
+  type: metric alert
+  query: "avg(last_5m):p95:trace.fastapi.request{service:talentmatch-ai} > 2"
+  message: |
+    TalentMatch AI P95 latency exceeds 2 seconds.
+    This may indicate model inference slowdowns or resource contention.
+    
+    @slack-talentmatch-alerts
+  tags:
+    - service:talentmatch-ai
+    - env:production
+    - team:ml
+  options:
+    thresholds:
+      critical: 2
+      warning: 1.5
+
+- name: "TalentMatch AI — High Error Rate (> 5%)"
+  type: metric alert
+  query: "sum(last_5m):sum:trace.fastapi.request.errors{service:talentmatch-ai}.as_count() / sum:trace.fastapi.request.hits{service:talentmatch-ai}.as_count() > 0.05"
+  message: |
+    TalentMatch AI error rate exceeds 5%.
+    Check application logs for root cause.
+    
+    @slack-talentmatch-alerts @pagerduty-talentmatch
+  tags:
+    - service:talentmatch-ai
+    - env:production
+  options:
+    thresholds:
+      critical: 0.05
+      warning: 0.02
+
+# ── Model Health ─────────────────────────────────────────
+
+- name: "TalentMatch AI — Score Distribution Drift"
+  type: metric alert
+  query: "avg(last_1h):avg:talentmatch.screening.score{service:talentmatch-ai} < 30"
+  message: |
+    Average screening score has dropped below 30.
+    This may indicate model drift or data quality issues.
+    
+    Investigate:
+    1. Check recent model deployments
+    2. Review input data quality
+    3. Run fairness evaluation
+    
+    @slack-talentmatch-alerts @pagerduty-talentmatch
+  tags:
+    - service:talentmatch-ai
+    - compliance:nist-ai-rmf
+    - monitor:model-drift
+  options:
+    thresholds:
+      critical: 30
+      warning: 40
+
+- name: "TalentMatch AI — High Auto-Reject Rate (> 40%)"
+  type: metric alert
+  query: "sum(last_1h):sum:talentmatch.screening.action{action:auto_reject,service:talentmatch-ai}.as_count() / sum:talentmatch.screening.action{service:talentmatch-ai}.as_count() > 0.40"
+  message: |
+    Auto-reject rate exceeds 40% in the last hour.
+    This may indicate bias or model degradation.
+    
+    EU AI Act Art. 14 — Consider activating human-review-only mode.
+    
+    @slack-talentmatch-alerts
+  tags:
+    - service:talentmatch-ai
+    - compliance:eu-ai-act
+    - monitor:fairness
+  options:
+    thresholds:
+      critical: 0.40
+      warning: 0.30
+
+# ── Infrastructure ───────────────────────────────────────
+
+- name: "TalentMatch AI — Service Down"
+  type: service check
+  query: "\"http.can_connect\".over(\"instance:talentmatch-ai-health\").by(\"*\").last(3).count_by_status()"
+  message: |
+    TalentMatch AI health check is failing.
+    Service may be down or unreachable.
+    
+    @pagerduty-talentmatch
+  tags:
+    - service:talentmatch-ai
+    - env:production
+
+- name: "TalentMatch AI — High Memory Usage (> 85%)"
+  type: metric alert
+  query: "avg(last_5m):avg:docker.mem.rss{container_name:talentmatch-backend} / avg:docker.mem.limit{container_name:talentmatch-backend} > 0.85"
+  message: |
+    TalentMatch backend memory usage exceeds 85%.
+    Model inference may be consuming excessive memory.
+    
+    @slack-talentmatch-alerts
+  tags:
+    - service:talentmatch-ai
+    - env:production
+  options:
+    thresholds:
+      critical: 0.85
+      warning: 0.75
