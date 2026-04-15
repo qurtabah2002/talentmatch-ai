@@ -1,0 +1,168 @@
+name: TalentMatch AI CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+
+jobs:
+  backend-test:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: |
+          cd backend
+          python -m pytest tests/ -v --tb=short
+
+      - name: Notify Vigilens — tests complete
+        if: always()
+        run: |
+          curl -s -X POST "${{ secrets.VIGILENS_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Webhook-Secret: ${{ secrets.VIGILENS_WEBHOOK_SECRET }}" \
+            -d '{
+              "event": "test_run",
+              "system": "talentmatch-ai",
+              "source": "github_actions",
+              "status": "${{ job.status }}",
+              "ref": "${{ github.ref }}",
+              "sha": "${{ github.sha }}",
+              "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }' || true
+
+  backend-lint:
+    name: Backend Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint
+        run: cd backend && ruff check .
+
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: cd frontend && npm ci
+
+      - name: Type check
+        run: cd frontend && npx tsc --noEmit
+
+      - name: Build
+        run: cd frontend && npm run build
+
+  fairness-check:
+    name: Fairness Evaluation
+    runs-on: ubuntu-latest
+    needs: backend-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+
+      - name: Run fairness evaluation
+        run: |
+          cd backend
+          python -c "
+          from app.ml.train import load_training_data, _generate_synthetic_data
+          from app.ml.evaluate import run_fairness_evaluation
+          from sklearn.feature_extraction.text import TfidfVectorizer
+          from sklearn.linear_model import LogisticRegression
+          from sklearn.pipeline import Pipeline
+          from sklearn.model_selection import train_test_split
+          import json
+
+          df = load_training_data()
+          X_train, X_test, y_train, y_test = train_test_split(
+              df['text'].tolist(), df['label'].tolist(), test_size=0.2, random_state=42
+          )
+          pipeline = Pipeline([
+              ('tfidf', TfidfVectorizer(max_features=5000, ngram_range=(1,2), stop_words='english')),
+              ('clf', LogisticRegression(max_iter=1000, C=1.0, class_weight='balanced', random_state=42)),
+          ])
+          pipeline.fit(X_train, y_train)
+          report = run_fairness_evaluation(pipeline, X_test, y_test)
+          print(json.dumps(report, indent=2))
+
+          assert report['passes_80_percent_rule'], f'FAIL: Disparate impact {report[\"disparate_impact_ratio\"]} < 0.80'
+          print('✓ Fairness check passed')
+          "
+
+      - name: Notify Vigilens — fairness check
+        if: always()
+        run: |
+          curl -s -X POST "${{ secrets.VIGILENS_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Webhook-Secret: ${{ secrets.VIGILENS_WEBHOOK_SECRET }}" \
+            -d '{
+              "event": "fairness_evaluation",
+              "system": "talentmatch-ai",
+              "source": "github_actions",
+              "status": "${{ job.status }}",
+              "ref": "${{ github.ref }}",
+              "sha": "${{ github.sha }}"
+            }' || true
+
+  deploy:
+    name: Deploy (Staging)
+    runs-on: ubuntu-latest
+    needs: [backend-test, frontend-build, fairness-check]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy notification
+        run: echo "Deploy step — configure for your hosting provider"
+
+      - name: Notify Vigilens — deployment
+        run: |
+          curl -s -X POST "${{ secrets.VIGILENS_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Webhook-Secret: ${{ secrets.VIGILENS_WEBHOOK_SECRET }}" \
+            -d '{
+              "event": "deployment",
+              "system": "talentmatch-ai",
+              "source": "github_actions",
+              "environment": "staging",
+              "status": "success",
+              "ref": "${{ github.ref }}",
+              "sha": "${{ github.sha }}"
+            }' || true
